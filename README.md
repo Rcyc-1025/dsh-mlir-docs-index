@@ -90,7 +90,7 @@ node scripts/mlir-docs.mjs query --q "overflow" --field summary,description --di
 node test/acceptance.mjs
 ```
 
-逐条跑规格 §13 的 A1–A10：A1–A7、A9、A10 只读真实语料；A8 在 `test/.tmp/` 复制两份 `.td` 做小语料，验证 stale → `INDEX_STALE` 警告 → refresh 闭环，**不会改动 llvm-src / llvm-build**。全过输出 `PASS：66/66`。
+逐条跑规格 §13 的 A1–A10：A1–A7、A9、A10 只读真实语料；A8 在 `test/.tmp/` 复制两份 `.td` 做小语料，验证 stale → `INDEX_STALE` 警告 → refresh 闭环，**不会改动 llvm-src / llvm-build**。另有 B1–B6 回归用例覆盖审查修复项（`--out` junction 逃逸、损坏索引的 `status`、`--format text` 输出、`cppClass`/`tablegenDef`、dialect `opCount` 真实计数）。全过输出 `PASS：80/80`。
 
 ## 置信度与已知限制
 

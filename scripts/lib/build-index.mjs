@@ -12,6 +12,32 @@ export const SCHEMA_VERSION = 1
 const MAX_WARNINGS = 50
 const MAX_OP_NAMES = 500
 
+/**
+ * 把路径解析成「真实路径」：对最近的已存在祖先做 realpath，再拼回不存在的尾部。
+ * 这样 junction / symlink 指向的真实目标也会被展开，无法靠链接绕过目录限制。
+ */
+function realpathLoose(target) {
+  let cur = path.resolve(target)
+  const tail = []
+  while (!fs.existsSync(cur)) {
+    const parent = path.dirname(cur)
+    if (parent === cur) break
+    tail.unshift(path.basename(cur))
+    cur = parent
+  }
+  let real
+  try {
+    real = fs.realpathSync.native(cur)
+  } catch {
+    try {
+      real = fs.realpathSync(cur)
+    } catch {
+      real = cur
+    }
+  }
+  return tail.length ? path.join(real, ...tail) : real
+}
+
 export function resolveOutDir(skillDir, out) {
   const raw = out == null ? 'index' : String(out)
   if (raw.includes('..')) {
@@ -24,6 +50,18 @@ export function resolveOutDir(skillDir, out) {
   const rel = path.relative(skillDir, resolved)
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
     fail('INVALID_ARGUMENT', '--out 必须位于 skill 目录内部。', { out: raw, resolved, skillDir }, '例如 --out index；不要把索引写到 skill 目录之外。')
+  }
+  // 二次校验：按真实路径再比一次，防止 test/.tmp/link（junction）指向 skill 之外。
+  const realSkill = realpathLoose(skillDir)
+  const realResolved = realpathLoose(resolved)
+  const realRel = path.relative(realSkill, realResolved)
+  if (!realRel || realRel.startsWith('..') || path.isAbsolute(realRel)) {
+    fail(
+      'INVALID_ARGUMENT',
+      '--out 解析后的真实路径位于 skill 目录之外（疑似 junction / symlink 逃逸）。',
+      { out: raw, resolved, realPath: realResolved, realSkillDir: realSkill },
+      '不要用链接把索引指向外部；--out 必须是 skill 目录内、不经过链接的真实子目录。',
+    )
   }
   return resolved
 }
@@ -467,15 +505,18 @@ export function buildIndex({ skillDir, outDir, roots, hashMode = 'content', warn
   }
 
   // ---------- dialect 回填 ----------
+  const opCountByDialect = new Map()
   for (const op of ops) {
     if (!op.dialect) continue
     const d = dialectByName.get(op.dialect)
     if (!d) continue
+    opCountByDialect.set(d.id, (opCountByDialect.get(d.id) || 0) + 1)
     if (d.opNames.length < MAX_OP_NAMES) d.opNames.push(op.id)
     else d.opNamesTruncated = true
   }
   for (const d of dialectEntries) {
-    d.opCount = d.opNames.length
+    // opCount 是真实总数；opNames 只是最多 MAX_OP_NAMES 条的样本（截断时 opNamesTruncated=true）。
+    d.opCount = opCountByDialect.get(d.id) || 0
     d.opNames.sort()
   }
 

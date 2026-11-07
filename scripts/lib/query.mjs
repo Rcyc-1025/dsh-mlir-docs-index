@@ -170,6 +170,8 @@ function presentOp(op, { allVariants = false, stale = false } = {}) {
     opName: op.opName,
     shortName: op.shortName,
     dialect: op.dialect,
+    tablegenDef: op.tablegenDef || null,
+    cppClass: op.cppClass || null,
     summary: op.summary,
     descriptionSnippet: op.description ? op.description.replace(/\s+/g, ' ').trim().slice(0, 300) : null,
     operands: op.operands,
@@ -372,6 +374,8 @@ export function formatText(response) {
       lines.push(`[op] ${r.id}  (confidence: ${r.confidence}${r.variantCount > 1 ? `, variants: ${r.variantCount}` : ''})`)
       if (r.source) lines.push(`  source: ${r.source.file}:${r.source.line}`)
       if (r.generated) lines.push(`  generated: ${r.generated.file}:${r.generated.classLine} (getOperationName: ${r.generated.operationNameLine})`)
+      if (r.cppClass) lines.push(`  cppClass: ${r.cppClass}`)
+      if (r.tablegenDef) lines.push(`  tablegenDef: ${r.tablegenDef}`)
       if (r.summary) lines.push(`  summary: ${r.summary}`)
       if (Array.isArray(r.operands)) {
         lines.push(`  operands: ${r.operands.length ? r.operands.map((o) => `${o.name}: ${o.type}${o.variadic ? ' (variadic)' : ''}`).join(', ') : '(none)'}`)

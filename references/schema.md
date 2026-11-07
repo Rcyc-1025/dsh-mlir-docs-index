@@ -90,8 +90,8 @@ index/
 | `description` | string \| null | 全文（供查询时切片） |
 | `source` | object | `{ file, line, endLine, kind: "td" }` |
 | `generated` | null | 预留（dialect 不做生成头映射） |
-| `opCount` | number | 该 dialect 下的 op 数 |
-| `opNames` | string[] | 该 dialect 的 op id，最多 500 条（超出时置 `opNamesTruncated: true`） |
+| `opCount` | number | 该 dialect 下 op 的真实总数（不受 `opNames` 截断影响） |
+| `opNames` | string[] | 最多 500 条 op id 样本；超过 500 时 `opNamesTruncated: true` |
 
 注意 `buildDialectAliases` 只在构建期用于把目录名/def 前缀映射到 dialect 名（`OpenACC/` → `acc`，`LLVMIR/` → `llvm`/`rocdl`/`nvvm`），不会写进索引。
 

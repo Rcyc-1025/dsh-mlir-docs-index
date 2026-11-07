@@ -15,6 +15,22 @@ description: 离线检索本地 LLVM/MLIR 23.1.4 的 op 与 dialect 定义：把
 
 只读本地文件，**不联网、不调用 mlir-opt**。索引来自文本解析，不保证与 C++ 语义完全一致（见「置信度与限制」）。
 
+## 何时使用
+
+- 写/改 MLIR pass、pattern 或 dialect 时，需要确认某个 op 的 `summary`、`traits`、`operands/results` 语义与来源行；
+- 想知道某个 op 的 ODS 定义在哪（`.td:line`）、生成头里的 C++ class 叫什么、在哪一行；
+- 需要一个 dialect 的 `cppNamespace`、定义行、包含哪些 op；
+- 要做离线检索（CI、断网环境、批量脚本）而不想读整个 `mlir/include` 目录树；
+- 要在同一台机器上对比多个版本/多份语料的 op 集合（各自 `--out` 一个索引目录）。
+
+## 何时不用
+
+- 问的是 **C++ 实现细节**（某个 pass 怎么实现的、某个方法做了什么）——索引只有 ODS 声明，没有 `.cpp` 实现；
+- 问的是 **IR 语义/运行行为**（“这个 op 会不会 fold”“这段 IR 合法吗”）——请用 `mlir-opt`、`mlir-opt --verify-diagnostics` 或实际编译；
+- 需要**跨文件全文搜索**（“哪里提到了 X”）——本索引只覆盖 op/dialect 名称与 summary/description/traits，不含 `.cpp` 正文与注释全文；
+- 需要 `defm`/multiclass **实例化细节**——本工具不展开 `defm`，这类 op 只能给生成头位置（`confidence: low`）；
+- 语料不是本地 LLVM/MLIR 源码树（例如远程仓库、压缩包）——请先自行下载/解压。
+
 ## 前置条件
 
 - Node.js ≥ 18（实测 v24.18.0），只用内置模块，无需 `npm install`。
@@ -63,19 +79,19 @@ node scripts/mlir-docs.mjs status
 | `--source-root DIR` | 必填（或环境变量）。缺/不存在 → `CORPUS_NOT_FOUND` |
 | `--examples-root DIR` | 可选；不存在只告警，不失败 |
 | `--generated-root DIR` | 可选；不存在降级为 metadata-only 并告警 |
-| `--out DIR` | 必须是 **skill 目录内的相对路径**，默认 `index` |
+| `--out DIR` | 必须是 **skill 目录内的相对路径**，默认 `index`；会按真实路径（realpath）二次校验，junction/symlink 指向外部同样拒绝 |
 | `--hash content\|meta` | 指纹模式，默认 `content`（sha256）；`meta` 只看 size/mtime |
 | `--force` | 已有索引时也重建（默认重建同样是全量，`--force` 仅跳过「无变化」提示） |
 
-返回 `counts.files / ops / dialects / generatedOnly / duplicateOpGroups`、`durationMs`、`indexBytes`、`fingerprint`、`versionLabel`、`warnings`。
+返回 `counts.files / ops / dialects / generatedOnly / duplicateOpGroups`、`durationMs`、`indexBytes`、`fingerprint`、`versionLabel`、`warnings`。`--format text` 输出与之一致的摘要（`ok`/`version`/`index`/`files`/`ops`/`fingerprint`）。
 
 ### `status`
 
-读 manifest 与 `files.jsonl`，对比磁盘上的 size/mtime 判断索引是否过期。返回 `ready`、`stale`、`staleFiles`、`counts`、`builtAt`、`versionLabel`。`--deep` 时额外做 sha256 校验（慢）。
+先校验索引完整性：`manifest.json / ops.jsonl / dialects.jsonl / files.jsonl / stats.json` 必须都存在且非空、`schemaVersion` 匹配、`ops.jsonl`/`dialects.jsonl` 行数与 manifest 计数一致；缺文件/损坏 → `INDEX_INCOMPLETE`（退出码 2），索引目录不存在 → `INDEX_MISSING`。校验通过后再对比磁盘 size/mtime 判断是否过期，返回 `ready`、`stale`、`staleFiles`、`counts`、`builtAt`、`versionLabel`。`--deep` 时额外做 sha256 校验（慢）。
 
 ### `refresh`
 
-先廉价比较（manifest 记录的 roots + 文件 size/mtime），无变化返回 `upToDate:true`；有变化则做一次全量 `build`。**refresh 只接受 `--out`**，roots 从 manifest 里取（所以不要传 `--source-root` 等）。
+先廉价比较（manifest 记录的 roots + 文件 size/mtime），无变化返回 `upToDate:true`；有变化则做一次全量 `build`。**refresh 只接受 `--out`**，roots 从 manifest 里取（所以不要传 `--source-root` 等）。`--format text` 输出 `upToDate` 与 changed/added/removed 计数。
 
 ### `query`
 
@@ -100,7 +116,7 @@ node scripts/mlir-docs.mjs status
   "total": 1,
   "returned": 1,
   "truncated": false,
-  "results": [ { "id": "arith.addi", "dialect": "arith", "score": 100, "matchedFields": ["opName"], "summary": "...", "traits": ["..."], "operands": [ { "name": "lhs", "type": "Arith_SignlessIntegerOrIndexLike" } ], "source": { "file": "...ArithOps.td", "line": 271 }, "generated": { "file": "...ArithOps.h.inc", "classLine": 1676, "operationNameLine": 1707 }, "confidence": "high", "variants": [], "unresolved": [] } ],
+  "results": [ { "id": "arith.addi", "dialect": "arith", "tablegenDef": "Arith_AddIOp", "cppClass": "arith::AddIOp", "score": 100, "matchedFields": ["opName"], "summary": "...", "traits": ["..."], "operands": [ { "name": "lhs", "type": "Arith_SignlessIntegerOrIndexLike" } ], "source": { "file": "...ArithOps.td", "line": 271 }, "generated": { "file": "...ArithOps.h.inc", "classLine": 1676, "operationNameLine": 1707 }, "confidence": "high", "variants": [], "unresolved": [] } ],
   "warnings": [],
   "hint": null
 }
@@ -129,7 +145,7 @@ node scripts/mlir-docs.mjs status
 ## 置信度与限制
 
 - `confidence: "high"`：`.td` 有定义 **且** 生成头里 `class` 行与 `getOperationName()` 行都找到 **且** operands/results 已确定（直接声明或一层基类继承都算）。
-  - 注意：这是与规格 §4.3 的一处裁决差异——规格把「字段来自一层基类」定成 medium，但 §13 A1 要求 `arith.addi = high`，而它的 operands 正是来自基类 `Arith_IntBinaryOpWithOverflowFlags`。本实现按 A1 执行，并把 `operands:inherited` 记进 `unresolved` 作为提示。
+  - 这是与规格 §4.3 的一处裁决差异——规格把「字段来自一层基类」定成 medium，但 §13 A1 要求 `arith.addi = high`，而它的 operands 正是来自基类 `Arith_IntBinaryOpWithOverflowFlags`。**裁决：以 §13 验收契约为准（A1 优先），一层继承仍算 high**，并把 `operands:inherited` 记进 `unresolved` 作为提示；README 与 `references/schema.md` 同步写明了该裁决。
 - `medium`：有 `.td`，但生成头缺失 / 名字对不上 / 字段仍未解析。
 - `low`：generated-only，只在生成头里出现、`.td` 里找不到（典型是 `defm`/multiclass 实例化出来的 op，如 `arm_neon.intr.*`、`arm_sme.intr.*`）。本实现**不展开 defm**，因此这些 op 只能给生成头位置。
 - 只做**一层**基类字段继承（与规格一致），更深的继承链不追。
@@ -168,6 +184,6 @@ node scripts/mlir-docs.mjs status
 node test/acceptance.mjs
 ```
 
-逐条跑规格 §13 A1–A10：A1–A7、A9、A10 只读真实语料；A8 在 `test/.tmp/` 下复制两份 `.td` 做小语料，验证 stale → warning → refresh 闭环，不会改动 `llvm-src` / `llvm-build`。全过输出 `PASS：N/N`，退出码 0。
+逐条跑规格 §13 A1–A10：A1–A7、A9、A10 只读真实语料；A8 在 `test/.tmp/` 下复制两份 `.td` 做小语料，验证 stale → warning → refresh 闭环，不会改动 `llvm-src` / `llvm-build`。另含 B1–B6 回归（junction 逃逸、损坏索引 status、`--format text`、`cppClass`/`tablegenDef`、dialect `opCount`）。全过输出 `PASS：80/80`，退出码 0。
 
 字段与文件格式详见 `references/schema.md`，常用查询配方见 `references/query-cookbook.md`。

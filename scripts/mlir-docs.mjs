@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MlirDocsError, toErrorResponse, fail } from './lib/errors.mjs'
 import { defaultGeneratedRoot, defaultSourceRoot, detectVersionLabel, resolveRoots, scanCorpus, toPosix } from './lib/scan.mjs'
-import { buildIndex, describeStale, resolveOutDir } from './lib/build-index.mjs'
+import { buildIndex, describeStale, resolveOutDir, SCHEMA_VERSION } from './lib/build-index.mjs'
 import { formatText, loadFileRecords, runQuery } from './lib/query.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -89,6 +89,57 @@ function formatOf(flags) {
   return f
 }
 
+const REQUIRED_INDEX_FILES = ['manifest.json', 'ops.jsonl', 'dialects.jsonl', 'files.jsonl', 'stats.json']
+
+function countLines(file) {
+  const buf = fs.readFileSync(file)
+  let n = 0
+  for (let i = 0; i < buf.length; i++) if (buf[i] === 10) n++
+  if (buf.length > 0 && buf[buf.length - 1] !== 10) n++
+  return n
+}
+
+function verifyIndexFiles(outDir, manifest) {
+  const missing = []
+  const empty = []
+  for (const name of REQUIRED_INDEX_FILES) {
+    try {
+      const st = fs.statSync(path.join(outDir, name))
+      if (!st.isFile() || st.size === 0) empty.push(name)
+    } catch {
+      missing.push(name)
+    }
+  }
+  if (missing.length || empty.length) {
+    fail(
+      'INDEX_INCOMPLETE',
+      `索引文件缺失或不完整：${[...missing, ...empty].join('、')}。`,
+      { indexPath: outDir, missing, empty },
+      '用 build --force 重建索引（或重新 build）。',
+    )
+  }
+  if (manifest.schemaVersion !== SCHEMA_VERSION) {
+    fail(
+      'INDEX_INCOMPLETE',
+      `索引 schemaVersion=${manifest.schemaVersion}，当前只支持 ${SCHEMA_VERSION}。`,
+      { indexPath: outDir, schemaVersion: manifest.schemaVersion },
+      '用 build --force 重建索引。',
+    )
+  }
+  const counts = manifest.counts || {}
+  const actual = { ops: countLines(path.join(outDir, 'ops.jsonl')), dialects: countLines(path.join(outDir, 'dialects.jsonl')) }
+  for (const key of ['ops', 'dialects']) {
+    if (typeof counts[key] === 'number' && actual[key] !== counts[key]) {
+      fail(
+        'INDEX_INCOMPLETE',
+        `${key}.jsonl 有 ${actual[key]} 行，与 manifest.counts.${key}=${counts[key]} 不一致。`,
+        { indexPath: outDir, file: `${key}.jsonl`, lines: actual[key], expected: counts[key] },
+        '用 build --force 重建索引。',
+      )
+    }
+  }
+}
+
 function indexVerdict(outDir, { deep = false } = {}) {
   const manifestPath = path.join(outDir, 'manifest.json')
   let manifest
@@ -98,6 +149,7 @@ function indexVerdict(outDir, { deep = false } = {}) {
     if (err && err.code === 'ENOENT') fail('INDEX_MISSING', '索引不存在（缺 manifest.json）。', { indexPath: outDir })
     fail('INDEX_INCOMPLETE', 'manifest.json 损坏。', { indexPath: outDir, error: String(err.message || err).slice(0, 200) })
   }
+  verifyIndexFiles(outDir, manifest)
   const records = loadFileRecords(outDir)
   const status = describeStale(records, { deep })
   const warnings = []
@@ -216,6 +268,34 @@ function fmtStatusText(res) {
   return lines.join('\n')
 }
 
+function fmtBuildText(res) {
+  const counts = res.counts || {}
+  const files = counts.fileKinds || {}
+  const lines = [
+    `ok: ${res.ok}  version: ${res.versionLabel}${res.versionLabel === 'unknown' ? '' : ''}`,
+    `index: ${res.indexPath}  (${(res.indexBytes / 1048576).toFixed(2)} MB, ${res.durationMs}ms)`,
+    `files: ${files.total ?? counts.files} (td ${files.td ?? '?'} / h ${files.h ?? '?'} / inc ${files.inc ?? '?'})`,
+    `ops: ${counts.ops ?? '?'}  dialects: ${counts.dialects ?? '?'}  generated-only: ${counts.generatedOnly ?? '?'}  duplicate groups: ${counts.duplicateOpGroups ?? '?'}`,
+    `fingerprint: ${res.fingerprint}`,
+  ]
+  if (res.warnings && res.warnings.length) lines.push(`warnings: ${res.warnings.map((w) => w.code).join(', ')}`)
+  if (res.hint) lines.push(`hint: ${res.hint}`)
+  return lines.join('\n')
+}
+
+function fmtRefreshText(res) {
+  if (res.upToDate) {
+    return [`upToDate: true  (无变化，未重建)`, `index: ${res.indexPath}`, `built: ${res.builtAt}`].join('\n')
+  }
+  const counts = res.counts || {}
+  return [
+    `upToDate: false  (已重建, ${res.durationMs}ms)`,
+    `changed: ${res.changedFiles}  added: ${res.addedFiles}  removed: ${res.removedFiles}`,
+    `ops: ${counts.ops ?? '?'}  dialects: ${counts.dialects ?? '?'}`,
+    `index: ${res.indexPath}`,
+  ].join('\n')
+}
+
 export function run(argv = process.argv.slice(2)) {
   let command = 'help'
   let json = null
@@ -232,7 +312,7 @@ export function run(argv = process.argv.slice(2)) {
 
     if (command === 'build') {
       json = buildCommand({ flags })
-      return { code: 0, json, format }
+      return { code: 0, json, format, text: fmtBuildText(json) }
     }
     if (command === 'status') {
       json = statusCommand({ outDir, deep: asBool(flags.deep) })
@@ -240,7 +320,7 @@ export function run(argv = process.argv.slice(2)) {
     }
     if (command === 'refresh') {
       json = refreshCommand({ outDir, warnings: [] })
-      return { code: 0, json, format }
+      return { code: 0, json, format, text: fmtRefreshText(json) }
     }
     if (command === 'query') {
       json = runQuery({

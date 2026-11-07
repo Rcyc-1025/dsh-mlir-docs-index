@@ -14,6 +14,7 @@
 
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -65,6 +66,11 @@ function run(args) {
     /* 非 JSON 输出（不该发生），由调用方断言 */
   }
   return { exit: r.status, stdout, stderr: r.stderr || '', json, durationMs }
+}
+
+function runText(args) {
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd: skillDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  return { exit: r.status, stdout: r.stdout || '', stderr: r.stderr || '' }
 }
 
 function firstResult(resp) {
@@ -240,6 +246,63 @@ check(a10a.exit === 2 && a10a.json && a10a.json.code === 'INVALID_QUERY', `空 q
 const a10b = run(['query', '--q', 'arith.addi', '--limit', '999'])
 check(a10b.exit === 2 && a10b.json && a10b.json.code === 'INVALID_ARGUMENT', `limit=999 → INVALID_ARGUMENT（实测 ${a10b.json && a10b.json.code}）`)
 check(a10b.json && typeof a10b.json.hint === 'string' && /1[–-]50/.test(a10b.json.hint), 'hint 给出合法范围 1–50')
+
+// ---------------------------------------------------------------- B1–B6 回归（审查发现的问题）
+section('B1 --out 不能经 junction 逃出 skill 目录')
+const escapeTarget = path.join(os.tmpdir(), `mlir-docs-escape-${process.pid}`)
+const escapeLink = path.join(TMP, 'escape-link')
+fs.mkdirSync(TMP, { recursive: true })
+fs.rmSync(escapeTarget, { recursive: true, force: true })
+fs.mkdirSync(escapeTarget, { recursive: true })
+try { fs.unlinkSync(escapeLink) } catch { /* not exists */ }
+fs.symlinkSync(escapeTarget, escapeLink, 'junction')
+const b1 = run(['build', '--source-root', SRC, '--generated-root', '', '--out', 'test/.tmp/escape-link/sub'])
+check(b1.exit === 2 && b1.json && b1.json.code === 'INVALID_ARGUMENT', `junction 目标 → INVALID_ARGUMENT（实测 ${b1.json && b1.json.code}, exit ${b1.exit}）`)
+check(!fs.existsSync(path.join(escapeTarget, 'sub', 'manifest.json')), '外部目标没有被写入 manifest.json')
+try { fs.unlinkSync(escapeLink) } catch { /* ignore */ }
+fs.rmSync(escapeTarget, { recursive: true, force: true })
+
+section('B2 status 必须发现索引文件缺失')
+const brokenDir = path.join(TMP, 'broken-index')
+fs.rmSync(brokenDir, { recursive: true, force: true })
+fs.mkdirSync(brokenDir, { recursive: true })
+for (const name of ['manifest.json', 'dialects.jsonl', 'files.jsonl', 'stats.json']) {
+  fs.copyFileSync(path.join(skillDir, 'index', name), path.join(brokenDir, name))
+}
+const b2 = run(['status', '--out', 'test/.tmp/broken-index'])
+check(b2.exit === 2 && b2.json && b2.json.ok === false && b2.json.code === 'INDEX_INCOMPLETE', `缺 ops.jsonl → INDEX_INCOMPLETE（实测 ${b2.json && b2.json.code}, exit ${b2.exit}）`)
+check(b2.json && typeof b2.json.hint === 'string' && /build/.test(b2.json.hint), 'hint 建议重建索引')
+
+section('B3 索引计数被篡改时 status 不报 ready')
+const tamperedDir = path.join(TMP, 'tampered-index')
+fs.rmSync(tamperedDir, { recursive: true, force: true })
+fs.cpSync(path.join(skillDir, 'index'), tamperedDir, { recursive: true })
+const tm = JSON.parse(fs.readFileSync(path.join(tamperedDir, 'manifest.json'), 'utf8'))
+tm.counts.ops = 1
+fs.writeFileSync(path.join(tamperedDir, 'manifest.json'), JSON.stringify(tm))
+const b3 = run(['status', '--out', 'test/.tmp/tampered-index'])
+check(b3.exit === 2 && b3.json && b3.json.code === 'INDEX_INCOMPLETE', `计数不一致 → INDEX_INCOMPLETE（实测 ${b3.json && b3.json.code}, exit ${b3.exit}）`)
+fs.rmSync(brokenDir, { recursive: true, force: true })
+fs.rmSync(tamperedDir, { recursive: true, force: true })
+
+section('B4 build/refresh --format text 有输出')
+const b4a = runText(['build', '--source-root', SRC, '--examples-root', EX, '--format', 'text'])
+check(b4a.exit === 0 && b4a.stdout.trim().length > 0, `build --format text 有输出（${b4a.stdout.trim().length} 字符）`)
+check(/^ok: true/m.test(b4a.stdout) && /^ops: \d+/m.test(b4a.stdout), 'text 含 ok/ops 摘要行')
+const b4b = runText(['refresh', '--format', 'text'])
+check(b4b.exit === 0 && b4b.stdout.trim().length > 0, `refresh --format text 有输出（${b4b.stdout.trim().length} 字符）`)
+check(/upToDate: (true|false)/.test(b4b.stdout), 'text 含 upToDate')
+
+section('B5 query 输出 cppClass / tablegenDef')
+const b5 = firstResult(run(['query', '--q', 'arith.addi', '--kind', 'op', '--exact']))
+check(b5 && b5.cppClass === 'arith::AddIOp', `cppClass = arith::AddIOp（实测 ${b5 && b5.cppClass}）`)
+check(b5 && b5.tablegenDef === 'Arith_AddIOp', `tablegenDef = Arith_AddIOp（实测 ${b5 && b5.tablegenDef}）`)
+
+section('B6 dialect opCount 是真实计数（不被 opNames 上限截断）')
+const b6 = firstResult(run(['query', '--q', 'spirv', '--kind', 'dialect', '--exact']))
+check(b6 && b6.opCount === 604, `spirv opCount = 604（实测 ${b6 && b6.opCount}）`)
+check(b6 && Array.isArray(b6.opNames) && b6.opNames.length <= 50, `opNames 返回样本 ≤50（实测 ${b6 && b6.opNames && b6.opNames.length}）`)
+check(b6 && b6.opNamesTruncated === true, 'opNamesTruncated = true')
 
 // ---------------------------------------------------------------- 性能
 section('性能（info）')
