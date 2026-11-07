@@ -1,0 +1,13 @@
+# 索引产物（可重建）：build 会整体替换 index/ 内容
+index/*
+!index/.gitkeep
+index.tmp-*/
+index.bak-*/
+
+# 测试临时语料/索引
+test/.tmp/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.log
